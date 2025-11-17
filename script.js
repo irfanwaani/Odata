@@ -1,12 +1,11 @@
 (function () {
   const myConnector = tableau.makeConnector();
-alert("ServiceNow OData Connector Loaded");
-  // ----- Define schema -----
+
+  // -------- Schema --------
   myConnector.getSchema = function (schemaCallback) {
     const columns = [
-      { id: "sys_id", dataType: tableau.dataTypeEnum.string },
-      { id: "name", dataType: tableau.dataTypeEnum.string },
-      { id: "sys_created_on", dataType: tableau.dataTypeEnum.datetime }
+      { id: "number", dataType: tableau.dataTypeEnum.string },
+      { id: "short_description", dataType: tableau.dataTypeEnum.string }
     ];
 
     const tableDef = {
@@ -18,32 +17,47 @@ alert("ServiceNow OData Connector Loaded");
     schemaCallback([tableDef]);
   };
 
-  // ----- Fetch data -----
+  // -------- Data Fetch --------
   myConnector.getData = function (table, doneCallback) {
     const url = tableau.connectionData;
 
-    fetch(url, { method: "GET", headers: { "Accept": "application/json" }})
-      .then(response => response.json())
+    console.log("📡 Fetching data from:", url);
+
+    fetch(url, {
+      method: "GET",
+      headers: {
+        "Accept": "application/json"
+      }
+    })
+      .then(response => {
+        console.log("📥 Raw Response:", response);
+        return response.json();
+      })
       .then(json => {
+        console.log("📦 Parsed JSON:", json);
+        console.log("📄 OData 'value' array:", json.value);
+
         const rows = json.value.map(item => ({
-          sys_id: item.sys_id,
-          name: item.name,
-          sys_created_on: item.sys_created_on
+          number: item.number,
+          short_description: item.short_description
         }));
+
+        console.log("🧩 Extracted rows to be loaded into Tableau:", rows);
 
         table.appendRows(rows);
         doneCallback();
       })
       .catch(error => {
-        console.error("Error fetching OData:", error);
+        console.error("❌ Error fetching OData:", error);
         doneCallback();
       });
   };
 
-  // ----- UI Submit -----
+  // -------- Submit Connector --------
   window.submitConnector = function () {
-    alert("Submitting ServiceNow OData Connector");
     const url = document.getElementById("odataUrl").value;
+
+    console.log("🔗 Connector submitted with URL:", url);
 
     tableau.connectionData = url;
     tableau.connectionName = "ServiceNow OData Feed";
