@@ -1,53 +1,54 @@
 (function () {
-  tableau.makeConnector();
-
   const myConnector = tableau.makeConnector();
 
+  // ----- Define schema -----
   myConnector.getSchema = function (schemaCallback) {
-    const cols = [
+    const columns = [
       { id: "sys_id", dataType: tableau.dataTypeEnum.string },
       { id: "name", dataType: tableau.dataTypeEnum.string },
-      { id: "created", dataType: tableau.dataTypeEnum.datetime }
+      { id: "sys_created_on", dataType: tableau.dataTypeEnum.datetime }
     ];
 
-    const tableSchema = {
+    const tableDef = {
       id: "sn_odata_table",
-      alias: "ServiceNow OData Data",
-      columns: cols
+      alias: "ServiceNow OData Feed",
+      columns
     };
 
-    schemaCallback([tableSchema]);
+    schemaCallback([tableDef]);
   };
 
+  // ----- Fetch data -----
   myConnector.getData = function (table, doneCallback) {
     const url = tableau.connectionData;
 
-    fetch(url, {
-      method: "GET",
-      headers: {
-        "Accept": "application/json"
-        // Add Authorization header if needed
-      }
-    })
-      .then(res => res.json())
+    fetch(url, { method: "GET", headers: { "Accept": "application/json" }})
+      .then(response => response.json())
       .then(json => {
         const rows = json.value.map(item => ({
           sys_id: item.sys_id,
           name: item.name,
-          created: item.sys_created_on
+          sys_created_on: item.sys_created_on
         }));
 
         table.appendRows(rows);
         doneCallback();
+      })
+      .catch(error => {
+        console.error("Error fetching OData:", error);
+        doneCallback();
       });
   };
 
-  function submit() {
+  // ----- UI Submit -----
+  window.submitConnector = function () {
     const url = document.getElementById("odataUrl").value;
+
     tableau.connectionData = url;
     tableau.connectionName = "ServiceNow OData Feed";
-    tableau.submit();
-  }
 
-  window.submit = submit;
+    tableau.submit();
+  };
+
+  tableau.registerConnector(myConnector);
 })();

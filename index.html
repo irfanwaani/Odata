@@ -1,15 +1,20 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="UTF-8">
+  <title>ServiceNow OData WDC</title>
+
   <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.0.js"></script>
   <script src="script.js"></script>
 </head>
 <body>
-  <h2>ServiceNow OData WDC</h2>
+  <h2>ServiceNow OData Web Data Connector</h2>
 
   <label>OData URL:</label>
-  <input id="odataUrl" type="text" value="https://dev184774.service-now.com/api/1544376/odata">
+  <input id="odataUrl" type="text" size="80"
+         value="https://dev184774.service-now.com/api/1544376/odata">
 
-  <button onclick="submit()">Connect</button>
+  <br><br>
+  <button onclick="submitConnector()">Connect</button>
 </body>
 </html>
