@@ -1,6 +1,6 @@
 (function () {
   const myConnector = tableau.makeConnector();
-
+alert("ServiceNow OData Connector Loaded");
   // ----- Define schema -----
   myConnector.getSchema = function (schemaCallback) {
     const columns = [
@@ -42,6 +42,7 @@
 
   // ----- UI Submit -----
   window.submitConnector = function () {
+    alert("Submitting ServiceNow OData Connector");
     const url = document.getElementById("odataUrl").value;
 
     tableau.connectionData = url;
