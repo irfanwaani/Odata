@@ -1,149 +1,364 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Generic JSON REST → Tableau WDC</title>
-  <!-- Tableau WDC library (host or local copy). If blocked, download and host locally) -->
+  <title>Generic JSON REST → Tableau WDC (Working)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!-- Official Tableau WDC library -->
   <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding: 18px; }
+    label { display:block; margin:8px 0; }
+    input[type=text], select { width: 100%; max-width: 720px; padding:8px; }
+    button { margin-top:10px; padding:10px 14px; border-radius:8px; cursor:pointer; }
+    .note { color: #444; margin-top:12px; font-size:0.95rem; }
+    pre { background:#f6f6f6; padding:10px; border-radius:6px; overflow:auto; }
+  </style>
 </head>
 <body>
-  <h3>Generic JSON REST → Tableau WDC</h3>
+  <h2>Generic JSON REST → Tableau WDC (Working)</h2>
 
-  <label>API URL: <input id="apiUrl" size="60" value="https://api.example.com/items"/></label><br/>
-  <label>HTTP Method:
+  <label>API URL
+    <input id="apiUrl" type="text" placeholder="https://api.example.com/items" value="https://api.example.com/items" />
+  </label>
+
+  <label>HTTP Method
     <select id="method"><option>GET</option><option>POST</option></select>
   </label>
-  <br/>
-  <label>Bearer token (optional): <input id="token" size="60" placeholder="Bearer token"/></label>
-  <br/>
-  <button id="connect">Connect to API</button>
 
-  <script>
-    (function() {
-      // Basic flatten: turn nested objects into dotted keys
-      function flatten(obj, prefix = '', res = {}) {
-        if (typeof obj !== 'object' || obj === null) {
-          res[prefix.replace(/\.$/,'')] = obj;
-          return res;
-        }
-        if (Array.isArray(obj)) {
-          // if array of primitives, join; if objects, take first object's keys with index suffixes
-          if (obj.length === 0) { res[prefix.replace(/\.$/,'')] = null; return res; }
-          if (obj.every(x => typeof x !== 'object')) {
-            res[prefix.replace(/\.$/,'')] = obj.join('|');
-            return res;
-          }
-          // merge array object keys by index (obj.0.key)
-          obj.forEach((item, i) => flatten(item, prefix + i + '.', res));
-          return res;
-        }
-        Object.keys(obj).forEach(k => flatten(obj[k], prefix + k + '.', res));
+  <label>Request Body (for POST) — JSON
+    <input id="postBody" type="text" placeholder='{"query":"value"}' />
+  </label>
+
+  <label>Bearer token (optional)
+    <input id="token" type="text" placeholder="Bearer token (without 'Bearer ' prefix)" />
+  </label>
+
+  <label>Pagination mode
+    <select id="pagination">
+      <option value="none">None (single request)</option>
+      <option value="nextLink">`response.next` contains next URL</option>
+      <option value="pageParam">page param (page=1,2,...)</option>
+    </select>
+  </label>
+
+  <label>Page parameter name (for pageParam)
+    <input id="pageParamName" type="text" placeholder="page" value="page" />
+  </label>
+
+  <button id="connectBtn">Connect to API (Register & Submit)</button>
+
+  <p class="note">Host this page on HTTPS. If your API blocks cross-origin requests, enable CORS on the API or use a proxy.</p>
+
+<script>
+(function () {
+  // ---- Utility: flatten nested JSON into dotted keys ----
+  function flatten(obj, prefix = '', res = {}) {
+    if (obj === null || obj === undefined) {
+      res[prefix.replace(/\.$/, '')] = null;
+      return res;
+    }
+    if (typeof obj !== 'object') {
+      res[prefix.replace(/\.$/, '')] = obj;
+      return res;
+    }
+    if (Array.isArray(obj)) {
+      if (obj.length === 0) {
+        res[prefix.replace(/\.$/, '')] = null;
         return res;
       }
+      // If array of primitives, join them
+      if (obj.every(x => typeof x !== 'object')) {
+        res[prefix.replace(/\.$/, '')] = obj.join('|');
+        return res;
+      }
+      // Otherwise flatten each object with index
+      obj.forEach((it, i) => flatten(it, prefix + i + '.', res));
+      return res;
+    }
+    Object.keys(obj).forEach(k => flatten(obj[k], prefix + k + '.', res));
+    return res;
+  }
 
-      const myConnector = tableau.makeConnector();
+  // ---- Safe way to call tableau APIs only after lib + init are ready ----
+  function whenTableauReady(cb) {
+    // Wait for page load first
+    if (document.readyState !== 'complete') {
+      window.addEventListener('load', () => whenTableauReady(cb));
+      return;
+    }
+    // Confirm the tableau object is present
+    if (typeof tableau === 'undefined') {
+      console.error('Tableau WDC library not found. Check the <script src> path and network (404).');
+      return;
+    }
 
-      myConnector.getSchema = function(schemaCallback) {
-        // We'll request a sample to infer schema dynamically
-        const apiUrl = document.getElementById('apiUrl').value;
-        const token = document.getElementById('token').value;
+    // If tableau.init exists, call it and wait for callback
+    if (typeof tableau.init === 'function') {
+      try {
+        tableau.init(function() {
+          // simulator/runtime has called init; safe to register/operate now
+          cb();
+        });
+      } catch (e) {
+        console.warn('tableau.init threw an error; proceeding cautiously:', e);
+        // fallback: still try to run callback if makeConnector exists
+        setTimeout(cb, 0);
+      }
+    } else {
+      // older runtimes: no init, but proceed
+      setTimeout(cb, 0);
+    }
+  }
 
-        const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
+  // ---- Main WDC code: define connector, getSchema, getData ----
+  function setupConnector() {
+    // Create connector inside the ready callback to avoid "called before init" errors.
+    const myConnector = tableau.makeConnector();
 
-        fetch(apiUrl, { headers })
-          .then(r => r.json())
-          .then(json => {
-            // find first record(s) inside the returned json; handle common wrappers
-            let rowsSample = [];
-            if (Array.isArray(json)) rowsSample = json;
-            else if (Array.isArray(json.data)) rowsSample = json.data;
-            else if (Array.isArray(json.items)) rowsSample = json.items;
-            else if (json && typeof json === 'object') {
-              // try to find first array value in object
-              for (const k in json) {
-                if (Array.isArray(json[k])) { rowsSample = json[k]; break; }
-              }
-              if (rowsSample.length === 0) rowsSample = [json]; // fallback single object
+    // Store last inferred columns so getData can use same schema.
+    let inferredColumns = [];
+
+    myConnector.getSchema = function (schemaCallback) {
+      const apiUrl = document.getElementById('apiUrl').value.trim();
+      const token = document.getElementById('token').value.trim();
+      const method = document.getElementById('method').value;
+      const postBody = document.getElementById('postBody').value.trim();
+
+      if (!apiUrl) {
+        tableau.abortWithError('API URL is required to infer schema.');
+        return;
+      }
+
+      const headers = { 'Accept': 'application/json' };
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+
+      // Fetch a sample (single or first page) to infer schema
+      fetch(apiUrl, {
+        method: method,
+        headers: headers,
+        body: method === 'POST' && postBody ? postBody : undefined
+      }).then(r => {
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + r.statusText + ' when fetching sample for schema.');
+        return r.json();
+      }).then(json => {
+        // locate array of records inside the response
+        let rows = [];
+        if (Array.isArray(json)) rows = json;
+        else if (Array.isArray(json.data)) rows = json.data;
+        else if (Array.isArray(json.items)) rows = json.items;
+        else {
+          // find first array property
+          for (const k in json) {
+            if (Array.isArray(json[k])) { rows = json[k]; break; }
+          }
+          if (rows.length === 0) rows = [json]; // single object fallback
+        }
+
+        // Build field list from first few records
+        const fieldMap = {};
+        rows.slice(0, 10).forEach(r => {
+          const flat = flatten(r);
+          Object.keys(flat).forEach(k => {
+            if (!fieldMap[k]) {
+              const val = flat[k];
+              // simple type inference
+              let dataType = tableau.dataTypeEnum.string;
+              if (typeof val === 'number') dataType = tableau.dataTypeEnum.float;
+              else if (typeof val === 'boolean') dataType = tableau.dataTypeEnum.bool;
+              else if (Number.isInteger(val)) dataType = tableau.dataTypeEnum.int;
+              fieldMap[k] = { id: k, alias: k, dataType: dataType };
             }
-
-            // flatten sample rows and build schema fields
-            const fieldSet = {};
-            rowsSample.slice(0,5).forEach(r => {
-              const flat = flatten(r);
-              Object.keys(flat).forEach(k => {
-                if (!fieldSet[k]) {
-                  // lightweight type inference
-                  const v = flat[k];
-                  let type = 'string';
-                  if (typeof v === 'number') type = 'float';
-                  else if (typeof v === 'boolean') type = 'bool';
-                  fieldSet[k] = { id: k, alias: k, dataType: tableau.dataTypeEnum[type.toUpperCase()] || tableau.dataTypeEnum.string };
-                }
-              });
-            });
-
-            // always include an id if present
-            const cols = Object.values(fieldSet);
-            if (cols.length === 0) {
-              // fallback single string column
-              cols.push({ id: 'value', alias:'value', dataType: tableau.dataTypeEnum.string });
-            }
-
-            const tableSchema = {
-              id: "rest_json_table",
-              alias: "REST JSON table",
-              columns: cols
-            };
-
-            schemaCallback([tableSchema]);
-          })
-          .catch(err => {
-            alert("Error fetching sample JSON for schema: " + err);
           });
-      };
+        });
 
-      myConnector.getData = function(table, doneCallback) {
-        const apiUrl = document.getElementById('apiUrl').value;
-        const token = document.getElementById('token').value;
-        const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
+        if (Object.keys(fieldMap).length === 0) {
+          // fallback single value column
+          inferredColumns = [{ id: 'value', alias: 'value', dataType: tableau.dataTypeEnum.string }];
+        } else {
+          inferredColumns = Object.values(fieldMap);
+        }
 
-        // Basic pagination patterns: ?page=, ?offset=, next link in response.next
-        // This sample fetches once; to implement full pagination extend here.
-        fetch(apiUrl, { headers })
-          .then(r => r.json())
-          .then(json => {
-            let dataArray = [];
-            if (Array.isArray(json)) dataArray = json;
-            else if (Array.isArray(json.data)) dataArray = json.data;
-            else if (Array.isArray(json.items)) dataArray = json.items;
-            else dataArray = [json];
-
-            const rows = dataArray.map(item => {
-              const flat = flatten(item);
-              // ensure all columns from schema exist
-              const row = {};
-              table.getColumns().forEach(col => {
-                const key = col.id;
-                row[key] = (flat[key] === undefined) ? null : flat[key];
-              });
-              return row;
-            });
-
-            table.appendRows(rows);
-            doneCallback();
-          })
-          .catch(err => {
-            tableau.abortWithError("Error fetching data: " + err);
-          });
-      };
-
-      tableau.registerConnector(myConnector);
-
-      document.getElementById('connect').addEventListener('click', function() {
-        tableau.connectionName = "Generic REST JSON";
-        tableau.submit(); // triggers Tableau to call getSchema/getData
+        const tableSchema = {
+          id: 'rest_json_table',
+          alias: 'REST JSON table',
+          columns: inferredColumns
+        };
+        schemaCallback([tableSchema]);
+      }).catch(err => {
+        tableau.abortWithError('Schema inference failed: ' + err.message);
       });
-    })();
-  </script>
+    };
+
+    myConnector.getData = function (table, doneCallback) {
+      const apiUrlBase = document.getElementById('apiUrl').value.trim();
+      const token = document.getElementById('token').value.trim();
+      const method = document.getElementById('method').value;
+      const postBody = document.getElementById('postBody').value.trim();
+      const paginationMode = document.getElementById('pagination').value;
+      const pageParamName = (document.getElementById('pageParamName').value || 'page');
+
+      if (!apiUrlBase) {
+        tableau.abortWithError('API URL is required.');
+        return;
+      }
+
+      const headers = { 'Accept': 'application/json' };
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+
+      // Helper to append rows from a JSON response
+      function extractRowsFromJson(json) {
+        let dataArray = [];
+        if (Array.isArray(json)) dataArray = json;
+        else if (Array.isArray(json.data)) dataArray = json.data;
+        else if (Array.isArray(json.items)) dataArray = json.items;
+        else {
+          // find first array property
+          for (const k in json) {
+            if (Array.isArray(json[k])) { dataArray = json[k]; break; }
+          }
+          if (dataArray.length === 0) dataArray = [json];
+        }
+
+        // Convert to flattened rows consistent with schema
+        const rows = dataArray.map(item => {
+          const flat = flatten(item);
+          const row = {};
+          table.getColumns().forEach(col => {
+            row[col.id] = (flat[col.id] === undefined) ? null : flat[col.id];
+          });
+          return row;
+        });
+        return rows;
+      }
+
+      // Pagination handling
+      if (paginationMode === 'none') {
+        // Single request
+        fetch(apiUrlBase, {
+          method: method,
+          headers: headers,
+          body: method === 'POST' && postBody ? postBody : undefined
+        }).then(r => {
+          if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + r.statusText);
+          return r.json();
+        }).then(json => {
+          const rows = extractRowsFromJson(json);
+          table.appendRows(rows);
+          doneCallback();
+        }).catch(err => tableau.abortWithError('Data fetch failed: ' + err.message));
+        return;
+      }
+
+      if (paginationMode === 'nextLink') {
+        // Follow json.next or response.next until null
+        let nextUrl = apiUrlBase;
+        (function loop() {
+          fetch(nextUrl, {
+            method: method,
+            headers: headers,
+            body: method === 'POST' && postBody ? postBody : undefined
+          }).then(r => {
+            if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + r.statusText);
+            return r.json();
+          }).then(json => {
+            const rows = extractRowsFromJson(json);
+            table.appendRows(rows);
+
+            // detect next url
+            const candidate = (json.next || json.next_url || (json.pagination && json.pagination.next));
+            if (candidate) {
+              nextUrl = candidate;
+              // continue loop
+              setTimeout(loop, 0);
+            } else {
+              doneCallback();
+            }
+          }).catch(err => tableau.abortWithError('Pagination (next) fetch failed: ' + err.message));
+        })();
+        return;
+      }
+
+      if (paginationMode === 'pageParam') {
+        // Simple page param incrementation
+        let page = 1;
+        let keepGoing = true;
+        (function pageLoop() {
+          const url = new URL(apiUrlBase, window.location.href);
+          url.searchParams.set(pageParamName, String(page));
+          fetch(url.toString(), {
+            method: method,
+            headers: headers,
+            body: method === 'POST' && postBody ? postBody : undefined
+          }).then(r => {
+            if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + r.statusText);
+            return r.json();
+          }).then(json => {
+            const rows = extractRowsFromJson(json);
+            if (rows.length === 0) {
+              keepGoing = false;
+            } else {
+              table.appendRows(rows);
+              // Heuristic: stop when response array length is less than page size or zero
+              // (user can refine this if API returns total_pages / has_more fields)
+            }
+
+            // detect explicit stop flags
+            const hasMore = (json.has_more === true || json.more === true || json.total_pages && page < json.total_pages);
+            if (keepGoing && (hasMore || rows.length > 0)) {
+              page++;
+              setTimeout(pageLoop, 0);
+            } else {
+              doneCallback();
+            }
+          }).catch(err => tableau.abortWithError('Pagination (page param) fetch failed: ' + err.message));
+        })();
+        return;
+      }
+
+      // default fallback
+      tableau.abortWithError('Unsupported pagination mode: ' + paginationMode);
+    };
+
+    // Register the connector now that it's defined
+    tableau.registerConnector(myConnector);
+    console.log('Connector defined and registered.');
+  }
+
+  // Wire up the Connect button to register and submit
+  document.getElementById('connectBtn').addEventListener('click', function () {
+    // When the button is clicked, ensure tableau is ready, then register connector and submit.
+    whenTableauReady(function () {
+      // Setup/register connector (idempotent if clicked twice in same session)
+      try {
+        setupConnector();
+      } catch (e) {
+        console.error('Error setting up connector:', e);
+        tableau.abortWithError('Connector setup failed: ' + e.message);
+        return;
+      }
+
+      // Set a friendly connection name (shown in Tableau)
+      tableau.connectionName = 'Generic REST JSON Connector';
+      // Submit will trigger tableau to call getSchema then getData
+      try {
+        tableau.submit();
+      } catch (e) {
+        console.error('tableau.submit error:', e);
+        // Some runtimes may not allow submit; show an error for debugging
+        alert('Error calling tableau.submit(): ' + e.message + '\nIf you are using the WDC Simulator, load the page via the simulator UI.');
+      }
+    });
+  });
+
+  // Safety: log if tableau object not available at load
+  window.addEventListener('load', function() {
+    if (typeof tableau === 'undefined') {
+      console.warn('tableau object is not defined at window.load. If you run this outside the simulator or Tableau, this is expected.');
+    }
+  });
+
+})();
+</script>
 </body>
 </html>
