@@ -1,20 +1,149 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
 <head>
-  <meta charset="UTF-8">
-  <title>ServiceNow OData WDC</title>
-
-  <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.0.js"></script>
-  <script src="script.js"></script>
+  <meta charset="utf-8" />
+  <title>Generic JSON REST → Tableau WDC</title>
+  <!-- Tableau WDC library (host or local copy). If blocked, download and host locally) -->
+  <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
 </head>
 <body>
-  <h2>ServiceNow OData Web Data Connector</h2>
+  <h3>Generic JSON REST → Tableau WDC</h3>
 
-  <label>OData URL:</label>
-  <input id="odataUrl" size="80" 
-     value="https://dev184774.service-now.com/api/1544376/odata">
+  <label>API URL: <input id="apiUrl" size="60" value="https://api.example.com/items"/></label><br/>
+  <label>HTTP Method:
+    <select id="method"><option>GET</option><option>POST</option></select>
+  </label>
+  <br/>
+  <label>Bearer token (optional): <input id="token" size="60" placeholder="Bearer token"/></label>
+  <br/>
+  <button id="connect">Connect to API</button>
 
-  <br><br>
-  <button onclick="submitConnector()">Connect</button>
+  <script>
+    (function() {
+      // Basic flatten: turn nested objects into dotted keys
+      function flatten(obj, prefix = '', res = {}) {
+        if (typeof obj !== 'object' || obj === null) {
+          res[prefix.replace(/\.$/,'')] = obj;
+          return res;
+        }
+        if (Array.isArray(obj)) {
+          // if array of primitives, join; if objects, take first object's keys with index suffixes
+          if (obj.length === 0) { res[prefix.replace(/\.$/,'')] = null; return res; }
+          if (obj.every(x => typeof x !== 'object')) {
+            res[prefix.replace(/\.$/,'')] = obj.join('|');
+            return res;
+          }
+          // merge array object keys by index (obj.0.key)
+          obj.forEach((item, i) => flatten(item, prefix + i + '.', res));
+          return res;
+        }
+        Object.keys(obj).forEach(k => flatten(obj[k], prefix + k + '.', res));
+        return res;
+      }
+
+      const myConnector = tableau.makeConnector();
+
+      myConnector.getSchema = function(schemaCallback) {
+        // We'll request a sample to infer schema dynamically
+        const apiUrl = document.getElementById('apiUrl').value;
+        const token = document.getElementById('token').value;
+
+        const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
+
+        fetch(apiUrl, { headers })
+          .then(r => r.json())
+          .then(json => {
+            // find first record(s) inside the returned json; handle common wrappers
+            let rowsSample = [];
+            if (Array.isArray(json)) rowsSample = json;
+            else if (Array.isArray(json.data)) rowsSample = json.data;
+            else if (Array.isArray(json.items)) rowsSample = json.items;
+            else if (json && typeof json === 'object') {
+              // try to find first array value in object
+              for (const k in json) {
+                if (Array.isArray(json[k])) { rowsSample = json[k]; break; }
+              }
+              if (rowsSample.length === 0) rowsSample = [json]; // fallback single object
+            }
+
+            // flatten sample rows and build schema fields
+            const fieldSet = {};
+            rowsSample.slice(0,5).forEach(r => {
+              const flat = flatten(r);
+              Object.keys(flat).forEach(k => {
+                if (!fieldSet[k]) {
+                  // lightweight type inference
+                  const v = flat[k];
+                  let type = 'string';
+                  if (typeof v === 'number') type = 'float';
+                  else if (typeof v === 'boolean') type = 'bool';
+                  fieldSet[k] = { id: k, alias: k, dataType: tableau.dataTypeEnum[type.toUpperCase()] || tableau.dataTypeEnum.string };
+                }
+              });
+            });
+
+            // always include an id if present
+            const cols = Object.values(fieldSet);
+            if (cols.length === 0) {
+              // fallback single string column
+              cols.push({ id: 'value', alias:'value', dataType: tableau.dataTypeEnum.string });
+            }
+
+            const tableSchema = {
+              id: "rest_json_table",
+              alias: "REST JSON table",
+              columns: cols
+            };
+
+            schemaCallback([tableSchema]);
+          })
+          .catch(err => {
+            alert("Error fetching sample JSON for schema: " + err);
+          });
+      };
+
+      myConnector.getData = function(table, doneCallback) {
+        const apiUrl = document.getElementById('apiUrl').value;
+        const token = document.getElementById('token').value;
+        const headers = token ? { 'Authorization': 'Bearer ' + token } : {};
+
+        // Basic pagination patterns: ?page=, ?offset=, next link in response.next
+        // This sample fetches once; to implement full pagination extend here.
+        fetch(apiUrl, { headers })
+          .then(r => r.json())
+          .then(json => {
+            let dataArray = [];
+            if (Array.isArray(json)) dataArray = json;
+            else if (Array.isArray(json.data)) dataArray = json.data;
+            else if (Array.isArray(json.items)) dataArray = json.items;
+            else dataArray = [json];
+
+            const rows = dataArray.map(item => {
+              const flat = flatten(item);
+              // ensure all columns from schema exist
+              const row = {};
+              table.getColumns().forEach(col => {
+                const key = col.id;
+                row[key] = (flat[key] === undefined) ? null : flat[key];
+              });
+              return row;
+            });
+
+            table.appendRows(rows);
+            doneCallback();
+          })
+          .catch(err => {
+            tableau.abortWithError("Error fetching data: " + err);
+          });
+      };
+
+      tableau.registerConnector(myConnector);
+
+      document.getElementById('connect').addEventListener('click', function() {
+        tableau.connectionName = "Generic REST JSON";
+        tableau.submit(); // triggers Tableau to call getSchema/getData
+      });
+    })();
+  </script>
 </body>
 </html>
