@@ -1,8 +1,0 @@
-{
-  "name": "ServiceNow OData WDC",
-  "version": "1.0.0",
-  "description": "A Web Data Connector for loading ServiceNow OData feeds into Tableau.",
-  "scripts": {
-    "main": "script.js"
-  }
-}

@@ -1,306 +1,68 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html>
 <head>
-  <meta charset="utf-8" />
-  <title>ServiceNow OData → Tableau WDC</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
-  <style>
-    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding:16px; }
-    label{display:block;margin:8px 0}
-    input[type=text], input[type=password], select { width:100%; max-width:820px; padding:8px; }
-    button { margin-top:10px; padding:10px 14px; border-radius:8px; cursor:pointer; }
-    .note{font-size:.95rem;color:#444}
-    pre{background:#f6f6f6;padding:10px;border-radius:6px}
-  </style>
+    <title>JSON API to Tableau</title>
+    <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
+    <script>
+        (function() {
+ 
+            var myConnector = tableau.makeConnector();
+ 
+            // Schema
+            myConnector.getSchema = function(schemaCallback) {
+                var cols = [
+                    { id: "number", dataType: tableau.dataTypeEnum.string },
+                    { id: "category", dataType: tableau.dataTypeEnum.string },
+                    { id: "short_description", dataType: tableau.dataTypeEnum.string },
+                    { id:"state", dataType: tableau.dataTypeEnum.string }
+                ];
+ 
+                schemaCallback([{
+                    id: "apiData",
+                    alias: "API JSON Data",
+                    columns: cols
+                }]);
+            };
+ 
+            // Data
+            myConnector.getData = function(table, doneCallback) {
+ 
+                fetch("https://dev284986.service-now.com/api/1467520/incident_api")
+                    .then(response => response.json())
+                    .then(data => {
+                        console.log(data)
+                        let tableData = [];
+ 
+                        // Assuming ServiceNow returns: { result: [...] }
+                        data.result?.forEach(item => {
+                            tableData.push({
+                                number: item.number,
+                                short_description: item.short_description,
+                                category: item.category,
+                                state: item.state
+                            });
+                        });
+ 
+                        table.appendRows(tableData);
+                        doneCallback();
+                    })
+                    .catch(err => console.error(err));
+            };
+ 
+            tableau.registerConnector(myConnector);
+ 
+            // Handle button click AFTER everything is registered
+            document.addEventListener("DOMContentLoaded", function () {
+                document.getElementById("getDataBtn").addEventListener("click", function () {
+                    tableau.connectionName = "API JSON Data";
+                    tableau.submit();
+                });
+            });
+ 
+        })();
+    </script>
 </head>
 <body>
-  <h2>ServiceNow OData → Tableau WDC</h2>
-
-  <label>OData API URL (example: https://devXXXX.service-now.com/api/1544376/odata)
-    <input id="apiUrl" type="text" placeholder="https://devXXXX.service-now.com/api/1544376/odata" />
-  </label>
-
-  <label>Authentication
-    <select id="authMode">
-      <option value="none">None</option>
-      <option value="basic">Basic (username/password)</option>
-      <option value="bearer">Bearer token</option>
-      <option value="proxy">Proxy (send no auth; WDC -> your proxy -> ServiceNow)</option>
-    </select>
-  </label>
-
-  <div id="basicAuthFields" style="display:none">
-    <label>Username
-      <input id="username" type="text" />
-    </label>
-    <label>Password
-      <input id="password" type="password" />
-    </label>
-  </div>
-
-  <div id="bearerAuthFields" style="display:none">
-    <label>Bearer token
-      <input id="bearerToken" type="text" placeholder="Paste token here" />
-    </label>
-  </div>
-
-  <label>Pagination handling (ServiceNow/OData usually provides `@odata.nextLink`)
-    <select id="pagination">
-      <option value="odataNext">Use `@odata.nextLink` (recommended)</option>
-      <option value="pageParam">page param (page=1...)</option>
-      <option value="none">None — single request</option>
-    </select>
-  </label>
-
-  <label>Page param name (if using page param)
-    <input id="pageParamName" type="text" value="page" />
-  </label>
-
-  <button id="connectBtn">Register & Connect</button>
-
-  <p class="note">CORS: If the browser console shows CORS errors, you must enable CORS on your ServiceNow instance or use a server-side proxy. ServiceNow APIs require authentication (Basic/OAuth) and are not publicly readable without credentials.</p>
-
-<script>
-(function() {
-  // small helper: show/hide auth UI
-  document.getElementById('authMode').addEventListener('change', function() {
-    const v = this.value;
-    document.getElementById('basicAuthFields').style.display = (v === 'basic') ? 'block' : 'none';
-    document.getElementById('bearerAuthFields').style.display = (v === 'bearer') ? 'block' : 'none';
-  });
-
-  // flatten nested JSON to dotted keys
-  function flatten(obj, prefix = '', res = {}) {
-    if (obj === null || obj === undefined) {
-      res[prefix.replace(/\.$/,'')] = null;
-      return res;
-    }
-    if (typeof obj !== 'object') {
-      res[prefix.replace(/\.$/,'')] = obj;
-      return res;
-    }
-    if (Array.isArray(obj)) {
-      if (obj.length === 0) {
-        res[prefix.replace(/\.$/,'')] = null;
-        return res;
-      }
-      if (obj.every(x => typeof x !== 'object')) {
-        res[prefix.replace(/\.$/,'')] = obj.join('|');
-        return res;
-      }
-      obj.forEach((it, i) => flatten(it, prefix + i + '.', res));
-      return res;
-    }
-    Object.keys(obj).forEach(k => flatten(obj[k], prefix + k + '.', res));
-    return res;
-  }
-
-  // Wait until tableau lib and init (if available) are ready
-  function whenTableauReady(cb) {
-    if (document.readyState !== 'complete') {
-      window.addEventListener('load', () => whenTableauReady(cb));
-      return;
-    }
-    if (typeof tableau === 'undefined') {
-      console.error('Tableau WDC library not loaded. Check network and script tag.');
-      return;
-    }
-    if (typeof tableau.init === 'function') {
-      try {
-        tableau.init(function() { cb(); });
-      } catch (e) {
-        console.warn('tableau.init error, proceeding:', e);
-        setTimeout(cb, 0);
-      }
-    } else {
-      setTimeout(cb, 0);
-    }
-  }
-
-  // build headers based on auth mode
-  function buildHeaders() {
-    const mode = document.getElementById('authMode').value;
-    const headers = { 'Accept': 'application/json' };
-    if (mode === 'basic') {
-      const user = document.getElementById('username').value || '';
-      const pass = document.getElementById('password').value || '';
-      const token = btoa(user + ':' + pass);
-      headers['Authorization'] = 'Basic ' + token;
-    } else if (mode === 'bearer') {
-      const tk = document.getElementById('bearerToken').value || '';
-      headers['Authorization'] = 'Bearer ' + tk;
-    }
-    return headers;
-  }
-
-  // core connector setup
-  function setupConnector() {
-    const connector = tableau.makeConnector();
-    let inferredColumns = [];
-
-    connector.getSchema = function(schemaCallback) {
-      const apiUrl = document.getElementById('apiUrl').value.trim();
-      if (!apiUrl) { tableau.abortWithError('API URL required'); return; }
-      const headers = buildHeaders();
-
-      fetch(apiUrl, { method: 'GET', headers: headers })
-        .then(r => {
-          if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + r.statusText);
-          return r.json();
-        })
-        .then(json => {
-          // OData convention: data in json.value (array)
-          let rows = [];
-          if (Array.isArray(json.value)) rows = json.value;
-          else if (Array.isArray(json.data)) rows = json.data;
-          else if (Array.isArray(json.items)) rows = json.items;
-          else {
-            // try to find first array property
-            for (const k in json) {
-              if (Array.isArray(json[k])) { rows = json[k]; break; }
-            }
-            if (rows.length === 0) rows = [json];
-          }
-
-          const map = {};
-          rows.slice(0,10).forEach(r => {
-            const flat = flatten(r);
-            Object.keys(flat).forEach(k => {
-              if (!map[k]) {
-                const v = flat[k];
-                let dt = tableau.dataTypeEnum.string;
-                if (typeof v === 'number') dt = tableau.dataTypeEnum.float;
-                else if (typeof v === 'boolean') dt = tableau.dataTypeEnum.bool;
-                map[k] = { id: k, alias: k, dataType: dt };
-              }
-            });
-          });
-
-          inferredColumns = Object.keys(map).length ? Object.values(map) : [{ id:'value', alias:'value', dataType: tableau.dataTypeEnum.string }];
-
-          const tableSchema = {
-            id: 'servicenow_odata',
-            alias: 'ServiceNow OData table',
-            columns: inferredColumns
-          };
-          schemaCallback([tableSchema]);
-        })
-        .catch(err => tableau.abortWithError('Schema fetch failed: ' + err.message));
-    };
-
-    connector.getData = function(table, doneCallback) {
-      const apiUrlBase = document.getElementById('apiUrl').value.trim();
-      const paginationMode = document.getElementById('pagination').value;
-      const pageParamName = (document.getElementById('pageParamName').value || 'page');
-      if (!apiUrlBase) { tableau.abortWithError('API URL required'); return; }
-      const headers = buildHeaders();
-
-      function rowsFromJson(json) {
-        let arr = [];
-        if (Array.isArray(json.value)) arr = json.value;
-        else if (Array.isArray(json.data)) arr = json.data;
-        else if (Array.isArray(json.items)) arr = json.items;
-        else {
-          for (const k in json) { if (Array.isArray(json[k])) { arr = json[k]; break; } }
-          if (arr.length === 0) arr = [json];
-        }
-        return arr.map(item => {
-          const flat = flatten(item);
-          const row = {};
-          table.getColumns().forEach(col => { row[col.id] = (flat[col.id] === undefined) ? null : flat[col.id]; });
-          return row;
-        });
-      }
-
-      // No pagination: simple fetch
-      if (paginationMode === 'none') {
-        fetch(apiUrlBase, { method: 'GET', headers: headers })
-          .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-          .then(json => {
-            const rows = rowsFromJson(json);
-            table.appendRows(rows);
-            doneCallback();
-          }).catch(err => tableau.abortWithError('Data fetch failed: ' + err.message));
-        return;
-      }
-
-      // OData nextLink pagination: follow @odata.nextLink or @odata.nextLink (some servers use '@odata.nextLink')
-      if (paginationMode === 'odataNext') {
-        let nextUrl = apiUrlBase;
-        (function loop() {
-          fetch(nextUrl, { method: 'GET', headers: headers })
-            .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-            .then(json => {
-              const rows = rowsFromJson(json);
-              if (rows.length > 0) table.appendRows(rows);
-              // common OData fields: '@odata.nextLink', 'nextLink', 'next'
-              const candidate = json['@odata.nextLink'] || json['@odata.nextlink'] || json.nextLink || json.next || (json.d && (json.d.__next || json.d.__next));
-              if (candidate) {
-                nextUrl = candidate;
-                setTimeout(loop, 0);
-              } else {
-                doneCallback();
-              }
-            })
-            .catch(err => tableau.abortWithError('Pagination failed: ' + err.message));
-        })();
-        return;
-      }
-
-      // page param mode (increment page)
-      if (paginationMode === 'pageParam') {
-        let page = 1;
-        (function pageLoop() {
-          try {
-            const url = new URL(apiUrlBase, window.location.href);
-            url.searchParams.set(pageParamName, String(page));
-            fetch(url.toString(), { method: 'GET', headers: headers })
-              .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-              .then(json => {
-                const rows = rowsFromJson(json);
-                if (rows.length === 0) {
-                  doneCallback();
-                  return;
-                }
-                table.appendRows(rows);
-                // naive stop: when a page returns fewer rows than a default pageSize (not known) - continue until empty
-                page++;
-                setTimeout(pageLoop, 0);
-              })
-              .catch(err => tableau.abortWithError('Pagination (page) failed: ' + err.message));
-          } catch(e) {
-            tableau.abortWithError('Invalid URL for pagination: ' + e.message);
-          }
-        })();
-        return;
-      }
-
-      tableau.abortWithError('Unsupported pagination mode: ' + paginationMode);
-    };
-
-    tableau.registerConnector(connector);
-  }
-
-  // Wire up Connect button
-  document.getElementById('connectBtn').addEventListener('click', function() {
-    whenTableauReady(function() {
-      try {
-        setupConnector();
-      } catch (e) {
-        console.error('Connector setup error', e);
-        tableau.abortWithError('Connector setup error: ' + e.message);
-        return;
-      }
-      tableau.connectionName = 'ServiceNow OData Connector';
-      try { tableau.submit(); }
-      catch (e) {
-        alert('tableau.submit() error: ' + e.message + '\nIf you are using the WDC Simulator, load the page from the Simulator UI.');
-      }
-    });
-  });
-
-})();
-</script>
+    <button id="getDataBtn">Get Data</button>
 </body>
 </html>
