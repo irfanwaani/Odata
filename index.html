@@ -11,10 +11,11 @@
             // Schema
             myConnector.getSchema = function(schemaCallback) {
                 var cols = [
-                    { id: "number", dataType: tableau.dataTypeEnum.string },
-                    { id: "category", dataType: tableau.dataTypeEnum.string },
+                    { id: "number", dataType: tableau.dataTypeEnum.number },
                     { id: "short_description", dataType: tableau.dataTypeEnum.string },
-                    { id:"state", dataType: tableau.dataTypeEnum.string }
+                    { id: "category", dataType: tableau.dataTypeEnum.string },
+                    { id: "state", dataType: tableau.dataTypeEnum.string },
+                    { id: "priority", dataType: tableau.dataTypeEnum.string },
                 ];
  
                 schemaCallback([{
@@ -39,7 +40,8 @@
                                 number: item.number,
                                 short_description: item.short_description,
                                 category: item.category,
-                                state: item.state
+                                state: item.state,
+                                priority: item.priority
                             });
                         });
  
@@ -66,3 +68,4 @@
     <button id="getDataBtn">Get Data</button>
 </body>
 </html>
+ 
